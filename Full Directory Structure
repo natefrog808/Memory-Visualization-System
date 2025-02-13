@@ -1,0 +1,13 @@
+argOS/
+├── src/
+│   ├── components/
+│   │   └── MemoryVisualizer.tsx
+│   ├── lib/
+│   │   ├── vectorStore.ts
+│   │   └── config.ts
+│   └── types/
+│       └── index.ts
+├── .env.example
+├── .gitignore
+├── package.json
+└── README.md
