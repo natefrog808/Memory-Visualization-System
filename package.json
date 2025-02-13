@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@/components/ui": "latest",
+    "recharts": "latest",
+    "lucide-react": "latest",
+    "hnswlib-node": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  }
+}
