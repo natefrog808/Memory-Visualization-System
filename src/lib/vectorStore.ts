@@ -1,676 +1,353 @@
 // src/lib/vectorStore.ts
 
 import { HierarchicalNSW } from 'hnswlib-node';
+import { VECTOR_STORE_CONFIG, MEMORY_CONFIG } from './config';
+import { MemoryCache } from './optimizations/memoryCacheManager';
+import { DatasetPartitioner } from './optimizations/datasetPartitioner';
+import { PredictiveAnalytics } from './analytics/predictiveAnalytics';
 
-interface VectorMetadata {
-    memoryId: number;
-    type: MemoryType;
-    timestamp: number;
+// Enhanced interfaces with decay and AI features
+interface EnhancedMemory extends Memory {
+    lastAccessed: number;
+    accessCount: number;
+    decayRate: number;
+    importance: number;
+    predictedRelevance: number;
+    aiGeneratedTags: string[];
+    semanticContext: string[];
 }
 
-export type MemoryType = 'episodic' | 'semantic' | 'procedural';
-
-interface Memory {
-    id: number;
-    type: MemoryType;
-    timestamp: number;
-    strength: number;
-    content: string;
-    emotions: string[];
-    vector: Float32Array;
-    references?: Array<{
-        id: number;
-        content: string;
-    }>;
+interface DecayConfig {
+    baseRate: number;
+    accessBoost: number;
+    importanceMultiplier: number;
+    minStrength: number;
 }
 
-interface ClusterMetadata {
-    centroid: Float32Array;
-    size: number;
-    averageStrength: number;
-    dominantEmotions: string[];
-    timeRange: {
-        start: number;
-        end: number;
-    };
+interface AIConfig {
+    predictionThreshold: number;
+    contextWindow: number;
+    semanticSimilarityThreshold: number;
 }
 
-export class VectorStore {
-    private dimension: number;
-    private maxElements: number;
-    private stores: Map<MemoryType, HierarchicalNSW>;
-    private metadata: Map<number, VectorMetadata>;
-    private clusters: Map<MemoryType, Map<number, ClusterMetadata>>;
-    private clusterAssignments: Map<number, number>;
-    private lastClusterUpdate: number;
-    private pendingUpdates: Set<MemoryType>;
-    private clusterUpdateThreshold: number;
-    private isUpdating: boolean;
-    private embeddingEndpoint: string;
-    private apiKey: string;
+export class EnhancedVectorStore extends VectorStore {
+    private cache: MemoryCache;
+    private partitioner: DatasetPartitioner;
+    private predictiveAnalytics: PredictiveAnalytics;
+    private decayConfig: DecayConfig;
+    private aiConfig: AIConfig;
+    private lastMaintenanceRun: number;
 
     constructor(
-        dimension: number = 768,
-        maxElements: number = 100000,
+        dimension: number = VECTOR_STORE_CONFIG.DIMENSION,
+        maxElements: number = VECTOR_STORE_CONFIG.MAX_ELEMENTS,
         embeddingEndpoint: string = process.env.EMBEDDING_API_ENDPOINT!,
         apiKey: string = process.env.GOOGLE_GENERATIVE_AI_API_KEY!
     ) {
-        this.dimension = dimension;
-        this.maxElements = maxElements;
-        this.embeddingEndpoint = embeddingEndpoint;
-        this.apiKey = apiKey;
+        super(dimension, maxElements, embeddingEndpoint, apiKey);
+
+        // Initialize optimizations
+        this.cache = new MemoryCache(MEMORY_CONFIG.CACHE_SIZE);
+        this.partitioner = new DatasetPartitioner(MEMORY_CONFIG.PARTITION_SIZE);
+        this.predictiveAnalytics = new PredictiveAnalytics();
         
-        // Initialize stores and metadata
-        this.stores = new Map();
-        this.metadata = new Map();
-        this.clusters = new Map();
-        this.clusterAssignments = new Map();
-        
-        // Initialize dynamic clustering parameters
-        this.lastClusterUpdate = Date.now();
-        this.pendingUpdates = new Set();
-        this.clusterUpdateThreshold = 100; // Number of changes before forcing update
-        this.isUpdating = false;
-        
-        ['episodic', 'semantic', 'procedural'].forEach(type => {
-            const index = new HierarchicalNSW('cosine', dimension);
-            index.initIndex(maxElements);
-            this.stores.set(type as MemoryType, index);
-        });
+        // Configure decay mechanisms
+        this.decayConfig = {
+            baseRate: 0.1,
+            accessBoost: 0.05,
+            importanceMultiplier: 1.5,
+            minStrength: 0.1
+        };
+
+        // Configure AI features
+        this.aiConfig = {
+            predictionThreshold: 0.7,
+            contextWindow: 10,
+            semanticSimilarityThreshold: 0.8
+        };
+
+        this.lastMaintenanceRun = Date.now();
+        this.initializeMaintenanceSchedule();
     }
 
-    async textToVector(text: string): Promise<Float32Array> {
+    private initializeMaintenanceSchedule(): void {
+        setInterval(() => {
+            this.runMaintenance();
+        }, MEMORY_CONFIG.MAINTENANCE_INTERVAL);
+    }
+
+    private async runMaintenance(): Promise<void> {
         try {
-            const response = await fetch(this.embeddingEndpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
-                },
-                body: JSON.stringify({ text })
-            });
-
-            if (!response.ok) {
-                throw new Error(`Embedding API error: ${response.statusText}`);
-            }
-
-            const data = await response.json();
-            return new Float32Array(data.embedding);
+            await this.applyMemoryDecay();
+            await this.consolidateMemories();
+            await this.updatePredictions();
+            await this.optimizeIndexes();
+            this.lastMaintenanceRun = Date.now();
         } catch (error) {
-            console.error('Error generating embedding:', error);
-            throw error;
+            console.error('Maintenance error:', error);
         }
     }
 
-    async addMemory(memory: Memory): Promise<number> {
+    private async applyMemoryDecay(): Promise<void> {
+        const now = Date.now();
+        const memories = await this.getAllMemories();
+
+        for (const memory of memories) {
+            const timeSinceLastAccess = now - memory.lastAccessed;
+            const accessFactor = Math.exp(-memory.accessCount * this.decayConfig.accessBoost);
+            const importanceFactor = memory.importance * this.decayConfig.importanceMultiplier;
+            
+            // Calculate decay
+            const decayAmount = this.decayConfig.baseRate * 
+                              timeSinceLastAccess / (1000 * 60 * 60 * 24) * // Convert to days
+                              accessFactor / importanceFactor;
+
+            // Update memory strength
+            memory.strength = Math.max(
+                this.decayConfig.minStrength,
+                memory.strength - decayAmount
+            );
+
+            // Archive or remove very weak memories
+            if (memory.strength <= this.decayConfig.minStrength) {
+                await this.archiveMemory(memory);
+            }
+        }
+    }
+
+    private async consolidateMemories(): Promise<void> {
+        const clusters = await this.getAllClusters();
+        
+        for (const cluster of clusters) {
+            const memories = await this.getClusterMemories(cluster.type, cluster.id);
+            const similarMemories = this.findSimilarMemoriesInCluster(memories);
+            
+            // Merge very similar memories
+            for (const group of similarMemories) {
+                if (group.length > 1) {
+                    await this.mergeMemoryGroup(group);
+                }
+            }
+        }
+    }
+
+    private async updatePredictions(): Promise<void> {
+        const memories = await this.getAllMemories();
+        
+        for (const memory of memories) {
+            // Update AI-generated predictions
+            memory.predictedRelevance = await this.predictiveAnalytics.predictRelevance(memory);
+            memory.aiGeneratedTags = await this.predictiveAnalytics.generateTags(memory);
+            memory.semanticContext = await this.predictiveAnalytics.analyzeContext(memory);
+
+            // Update importance based on predictions
+            memory.importance = this.calculateImportance(memory);
+        }
+    }
+
+    private async optimizeIndexes(): Promise<void> {
+        // Optimize HNSW indexes
+        for (const [type, store] of this.stores) {
+            await this.partitioner.rebalancePartitions(store);
+            await this.cache.optimizeCache(type);
+        }
+    }
+
+    // Enhanced memory addition with optimizations
+    async addMemory(memory: EnhancedMemory): Promise<number> {
         try {
-            // Get the appropriate store for this memory type
-            const store = this.stores.get(memory.type);
-            if (!store) {
-                throw new Error(`No vector store found for memory type: ${memory.type}`);
+            // Add AI enhancements before storage
+            memory.predictedRelevance = await this.predictiveAnalytics.predictRelevance(memory);
+            memory.aiGeneratedTags = await this.predictiveAnalytics.generateTags(memory);
+            memory.semanticContext = await this.predictiveAnalytics.analyzeContext(memory);
+            memory.importance = this.calculateImportance(memory);
+
+            // Use cache for frequent access
+            const cachedId = await this.cache.add(memory);
+            if (cachedId !== null) {
+                return cachedId;
             }
 
-            // Add to vector store
-            const vectorId = store.getCurrentCount();
-            store.addPoint(memory.vector, vectorId);
-
-            // Store metadata
-            this.metadata.set(vectorId, {
-                memoryId: memory.id,
-                type: memory.type,
-                timestamp: Date.now()
-            });
-
-            // Mark for cluster update
-            this.pendingUpdates.add(memory.type);
+            // Optimize storage for large datasets
+            const partition = this.partitioner.getOptimalPartition(memory);
+            const vectorId = await super.addMemory(memory);
             
-            // Check if we should trigger a cluster update
-            await this.checkClusterUpdate(memory.type);
+            // Update indexes and related memories
+            await this.updateRelatedMemories(memory, vectorId);
+            await this.optimizeLocalIndex(partition);
 
             return vectorId;
         } catch (error) {
-            console.error('Error adding memory to vector store:', error);
+            console.error('Error adding memory:', error);
             throw error;
         }
     }
 
+    // Enhanced similarity search with optimization
     async findSimilar(
         query: string | Float32Array,
         type: MemoryType,
         k: number = 5,
         threshold: number = 0.6
     ): Promise<Array<{ memoryId: number; similarity: number }>> {
-        try {
-            const store = this.stores.get(type);
-            if (!store) {
-                throw new Error(`No vector store found for type: ${type}`);
-            }
-
-            // Convert query to vector if it's a string
-            const queryVector = typeof query === 'string' 
-                ? await this.textToVector(query)
-                : query;
-
-            // Search for nearest neighbors
-            const results = store.searchKnn(queryVector, k);
-            const [indices, distances] = results;
-
-            // Convert cosine distances to similarities and filter by threshold
-            return indices
-                .map((index: number, i: number) => ({
-                    memoryId: this.metadata.get(index)?.memoryId || -1,
-                    similarity: 1 - distances[i] // Convert distance to similarity
-                }))
-                .filter(result => result.similarity >= threshold)
-                .sort((a, b) => b.similarity - a.similarity);
-        } catch (error) {
-            console.error('Error finding similar memories:', error);
-            throw error;
+        // Check cache first
+        const cachedResults = await this.cache.getSimilar(query, type, k);
+        if (cachedResults) {
+            return cachedResults;
         }
-    }
 
-    private async checkClusterUpdate(type: MemoryType): Promise<void> {
-        if (this.isUpdating) return;
+        // Optimize search for large datasets
+        const relevantPartitions = this.partitioner.getRelevantPartitions(query, type);
+        const results = await Promise.all(
+            relevantPartitions.map(partition => 
+                super.findSimilar(query, type, k, threshold, partition)
+            )
+        );
 
-        const store = this.stores.get(type);
-        if (!store) return;
-
-        const totalMemories = store.getCurrentCount();
-        const timeSinceLastUpdate = Date.now() - this.lastClusterUpdate;
-        const pendingCount = this.getPendingUpdateCount(type);
-
-        // Trigger update if:
-        // 1. Enough new memories have been added
-        // 2. It's been long enough since last update
-        // 3. The ratio of new memories to total is high enough
-        if (
-            pendingCount >= this.clusterUpdateThreshold ||
-            timeSinceLastUpdate >= 24 * 60 * 60 * 1000 || // Daily update
-            (pendingCount / totalMemories) >= 0.1 // 10% new memories
-        ) {
-            await this.updateClusters(type);
-        }
-    }
-
-    private getPendingUpdateCount(type: MemoryType): number {
-        return Array.from(this.metadata.values())
-            .filter(m => 
-                m.type === type && 
-                m.timestamp > this.lastClusterUpdate
-            ).length;
-    }
-
-    private async updateClusters(type: MemoryType): Promise<void> {
-        if (this.isUpdating) return;
+        // Merge and rank results
+        const mergedResults = this.mergeSearchResults(results, k);
         
-        try {
-            this.isUpdating = true;
+        // Update cache with new results
+        await this.cache.storeSimilarityResults(query, type, mergedResults);
 
-            // Get all vectors that have been added or modified since last update
-            const newVectors = Array.from(this.metadata.entries())
-                .filter(([_, meta]) => 
-                    meta.type === type && 
-                    meta.timestamp > this.lastClusterUpdate
-                )
-                .map(([id, _]) => id);
+        return mergedResults;
+    }
 
-            if (newVectors.length === 0) return;
+    private calculateImportance(memory: EnhancedMemory): number {
+        return (
+            memory.predictedRelevance * 0.4 +
+            memory.strength * 0.3 +
+            (memory.accessCount / 100) * 0.2 +
+            (memory.aiGeneratedTags.length / 10) * 0.1
+        );
+    }
 
-            // Get existing cluster assignments
-            const existingClusters = this.clusters.get(type) || new Map();
-            
-            // Determine optimal number of clusters based on data size
-            const totalMemories = this.stores.get(type)?.getCurrentCount() || 0;
-            const numClusters = Math.max(
-                5,
-                Math.min(
-                    Math.floor(Math.sqrt(totalMemories / 2)),
-                    20
-                )
-            );
+    private async mergeMemoryGroup(memories: EnhancedMemory[]): Promise<void> {
+        // Merge similar memories into a consolidated memory
+        const primaryMemory = memories[0];
+        const mergedContent = this.mergeMemoryContent(memories);
+        const mergedTags = this.mergeMemoryTags(memories);
 
-            // Perform incremental clustering
-            await this.incrementalClustering(type, newVectors, existingClusters, numClusters);
+        primaryMemory.content = mergedContent;
+        primaryMemory.aiGeneratedTags = mergedTags;
+        primaryMemory.importance = Math.max(...memories.map(m => m.importance));
+        primaryMemory.strength = Math.max(...memories.map(m => m.strength));
 
-            // Update metadata
-            this.lastClusterUpdate = Date.now();
-            this.pendingUpdates.delete(type);
-
-        } finally {
-            this.isUpdating = false;
+        // Archive or remove other memories
+        for (let i = 1; i < memories.length; i++) {
+            await this.archiveMemory(memories[i]);
         }
     }
 
-    private async incrementalClustering(
-        type: MemoryType,
-        newVectorIds: number[],
-        existingClusters: Map<number, ClusterMetadata>,
-        numClusters: number
-    ): Promise<void> {
-        const store = this.stores.get(type);
-        if (!store) return;
+    private findSimilarMemoriesInCluster(memories: EnhancedMemory[]): EnhancedMemory[][] {
+        const groups: EnhancedMemory[][] = [];
+        const processed = new Set<number>();
 
-        // Get vectors for new memories
-        const newVectors = newVectorIds.map(id => store.getPoint(id));
+        for (const memory of memories) {
+            if (processed.has(memory.id)) continue;
 
-        // If we have existing clusters, assign new vectors to nearest clusters
-        if (existingClusters.size > 0) {
-            const centroids = Array.from(existingClusters.values())
-                .map(metadata => metadata.centroid);
+            const group = [memory];
+            processed.add(memory.id);
 
-            // Assign new vectors to existing clusters
-            for (let i = 0; i < newVectors.length; i++) {
-                const vectorId = newVectorIds[i];
-                const nearestCluster = this.findNearestCentroid(newVectors[i], centroids);
-                this.clusterAssignments.set(vectorId, nearestCluster);
-            }
+            for (const other of memories) {
+                if (processed.has(other.id)) continue;
 
-            // Update cluster metadata
-            for (const [clusterId, metadata] of existingClusters) {
-                const clusterVectorIds = Array.from(this.clusterAssignments.entries())
-                    .filter(([_, cid]) => cid === clusterId)
-                    .map(([vid, _]) => vid);
-
-                const updatedMetadata = await this.calculateClusterMetadata(
-                    type,
-                    clusterVectorIds,
-                    metadata.centroid
-                );
-
-                existingClusters.set(clusterId, updatedMetadata);
-            }
-        } else {
-            // If no existing clusters, perform full clustering
-            await this.clusterMemories(type, numClusters);
-        }
-    }
-
-    async clusterMemories(type: MemoryType, numClusters: number = 10): Promise<void> {
-        const store = this.stores.get(type);
-        if (!store) {
-            throw new Error(`No vector store found for type: ${type}`);
-        }
-
-        // Get all vectors
-        const vectors: Float32Array[] = [];
-        const vectorIds: number[] = [];
-        const count = store.getCurrentCount();
-        
-        for (let i = 0; i < count; i++) {
-            if (!store.getDeletedLabel(i)) {
-                vectors.push(store.getPoint(i));
-                vectorIds.push(i);
-            }
-        }
-
-        if (vectors.length === 0) {
-            return;
-        }
-
-        // Perform k-means clustering
-        const clusters = await this.kMeansClustering(vectors, numClusters);
-        
-        // Update cluster assignments and metadata
-        const clusterMap = new Map<number, ClusterMetadata>();
-        const assignments = new Map<number, number>();
-
-        for (let clusterId = 0; clusterId < clusters.centroids.length; clusterId++) {
-            const clusterVectorIds = vectorIds.filter((_, i) => clusters.assignments[i] === clusterId);
-            
-            // Calculate cluster metadata
-            const metadata = await this.calculateClusterMetadata(
-                type,
-                clusterVectorIds,
-                clusters.centroids[clusterId]
-            );
-            
-            clusterMap.set(clusterId, metadata);
-            clusterVectorIds.forEach(vid => assignments.set(vid, clusterId));
-        }
-
-        // Update store state
-        this.clusters.set(type, clusterMap);
-        // Merge new assignments into existing ones
-        for (const [vectorId, clusterId] of assignments) {
-            this.clusterAssignments.set(vectorId, clusterId);
-        }
-    }
-
-    private async kMeansClustering(
-        vectors: Float32Array[],
-        k: number,
-        maxIterations: number = 100
-    ): Promise<{ centroids: Float32Array[]; assignments: number[] }> {
-        // Initialize centroids using k-means++
-        const centroids = this.initializeCentroids(vectors, k);
-        let assignments = new Array(vectors.length).fill(-1);
-        let iteration = 0;
-        let changed = true;
-
-        while (changed && iteration < maxIterations) {
-            changed = false;
-            
-            // Assign points to nearest centroid
-            for (let i = 0; i < vectors.length; i++) {
-                const nearest = this.findNearestCentroid(vectors[i], centroids);
-                if (nearest !== assignments[i]) {
-                    changed = true;
-                    assignments[i] = nearest;
+                const similarity = this.calculateMemorySimilarity(memory, other);
+                if (similarity >= this.aiConfig.semanticSimilarityThreshold) {
+                    group.push(other);
+                    processed.add(other.id);
                 }
             }
 
-            // Update centroids
-            for (let i = 0; i < k; i++) {
-                const clusterVectors = vectors.filter((_, idx) => assignments[idx] === i);
-                if (clusterVectors.length > 0) {
-                    centroids[i] = this.calculateCentroid(clusterVectors);
-                }
+            if (group.length > 0) {
+                groups.push(group);
             }
-
-            iteration++;
         }
 
-        return { centroids, assignments };
+        return groups;
     }
 
-    private initializeCentroids(vectors: Float32Array[], k: number): Float32Array[] {
-        const centroids: Float32Array[] = [];
-        const dimension = vectors[0].length;
-        
-        // Choose first centroid randomly
-        centroids.push(vectors[Math.floor(Math.random() * vectors.length)]);
+    private calculateMemorySimilarity(memory1: EnhancedMemory, memory2: EnhancedMemory): number {
+        // Calculate semantic similarity between memories
+        const contentSimilarity = this.calculateCosineSimilarity(
+            memory1.vector,
+            memory2.vector
+        );
 
-        // Choose remaining centroids using k-means++
-        for (let i = 1; i < k; i++) {
-            const distances = vectors.map(vector => 
-                Math.min(...centroids.map(centroid => 
-                    this.calculateDistance(vector, centroid)
-                ))
-            );
-            
-            const sum = distances.reduce((a, b) => a + b, 0);
-            const random = Math.random() * sum;
-            
-            let acc = 0;
-            let idx = 0;
-            for (idx = 0; idx < distances.length; idx++) {
-                acc += distances[idx];
-                if (acc >= random) break;
-            }
-            
-            centroids.push(vectors[idx]);
+        const tagSimilarity = this.calculateTagSimilarity(
+            memory1.aiGeneratedTags,
+            memory2.aiGeneratedTags
+        );
+
+        const contextSimilarity = this.calculateContextSimilarity(
+            memory1.semanticContext,
+            memory2.semanticContext
+        );
+
+        // Weighted combination of similarities
+        return (
+            contentSimilarity * 0.5 +
+            tagSimilarity * 0.3 +
+            contextSimilarity * 0.2
+        );
+    }
+
+    private calculateCosineSimilarity(vec1: Float32Array, vec2: Float32Array): number {
+        let dotProduct = 0;
+        let norm1 = 0;
+        let norm2 = 0;
+
+        for (let i = 0; i < vec1.length; i++) {
+            dotProduct += vec1[i] * vec2[i];
+            norm1 += vec1[i] * vec1[i];
+            norm2 += vec2[i] * vec2[i];
         }
 
-        return centroids;
+        return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
     }
 
-    private calculateDistance(a: Float32Array, b: Float32Array): number {
-        let sum = 0;
-        for (let i = 0; i < a.length; i++) {
-            const diff = a[i] - b[i];
-            sum += diff * diff;
-        }
-        return Math.sqrt(sum);
+    private calculateTagSimilarity(tags1: string[], tags2: string[]): number {
+        const set1 = new Set(tags1);
+        const set2 = new Set(tags2);
+        const intersection = new Set([...set1].filter(x => set2.has(x)));
+        const union = new Set([...set1, ...set2]);
+        return intersection.size / union.size;
     }
 
-    private calculateCentroid(vectors: Float32Array[]): Float32Array {
-        const dimension = vectors[0].length;
-        const centroid = new Float32Array(dimension);
-        
-        for (let i = 0; i < dimension; i++) {
-            centroid[i] = vectors.reduce((sum, v) => sum + v[i], 0) / vectors.length;
-        }
-        
-        return centroid;
+    private calculateContextSimilarity(context1: string[], context2: string[]): number {
+        const set1 = new Set(context1);
+        const set2 = new Set(context2);
+        const intersection = new Set([...set1].filter(x => set2.has(x)));
+        const union = new Set([...set1, ...set2]);
+        return intersection.size / union.size;
     }
 
-    private findNearestCentroid(vector: Float32Array, centroids: Float32Array[]): number {
-        let minDist = Infinity;
-        let nearest = 0;
-        
-        centroids.forEach((centroid, i) => {
-            const dist = this.calculateDistance(vector, centroid);
-            if (dist < minDist) {
-                minDist = dist;
-                nearest = i;
-            }
-        });
-        
-        return nearest;
+    private async archiveMemory(memory: EnhancedMemory): Promise<void> {
+        // Archive memory for potential future reference
+        // Implement your archival logic here
+        await this.moveToArchive(memory);
     }
 
-    async calculateClusterMetadata(
-        type: MemoryType,
-        vectorIds: number[],
-        centroid: Float32Array
-    ): Promise<ClusterMetadata> {
-        const memories = vectorIds
-            .map(vid => this.metadata.get(vid))
-            .filter((m): m is VectorMetadata => m !== undefined);
-
-        const timestamps = memories.map(m => m.timestamp);
-        const emotionsSet = new Set<string>();
-        let totalStrength = 0;
-
-        for (const vid of vectorIds) {
-            const memory = await this.getMemory(vid);
-            if (memory.type === 'episodic') {
-                memory.emotions.forEach(e => emotionsSet.add(e));
-            }
-            totalStrength += memory.strength;
-        }
-
-        return {
-            centroid,
-            size: vectorIds.length,
-            averageStrength: totalStrength / vectorIds.length,
-            dominantEmotions: Array.from(emotionsSet),
-            timeRange: {
-                start: Math.min(...timestamps),
-                end: Math.max(...timestamps)
-            }
-        };
-    }
-
-    async mergeClusters(type: MemoryType, cluster1: number, cluster2: number): Promise<number> {
-        const clusterMap = this.clusters.get(type);
-        if (!clusterMap) throw new Error('No clusters found for type: ' + type);
-
-        const metadata1 = clusterMap.get(cluster1);
-        const metadata2 = clusterMap.get(cluster2);
-        if (!metadata1 || !metadata2) throw new Error('Invalid cluster IDs');
-
-        // Get memories from both clusters
-        const memories1 = await this.getClusterMemories(type, cluster1);
-        const memories2 = await this.getClusterMemories(type, cluster2);
-        const allMemories = [...memories1, ...memories2];
-
-        // Calculate new centroid
-        const newCentroid = new Float32Array(this.dimension);
-        for (let i = 0; i < this.dimension; i++) {
-            newCentroid[i] = (metadata1.centroid[i] * memories1.length + 
-                             metadata2.centroid[i] * memories2.length) / allMemories.length;
-        }
-
-        // Create new cluster
-        const newClusterId = Math.max(...clusterMap.keys()) + 1;
-        const newMetadata = await this.calculateClusterMetadata(type, allMemories, newCentroid);
-        
-        // Update cluster assignments
-        allMemories.forEach(memId => {
-            this.clusterAssignments.set(memId, newClusterId);
-        });
-
-        // Update cluster map
-        clusterMap.delete(cluster1);
-        clusterMap.delete(cluster2);
-        clusterMap.set(newClusterId, newMetadata);
-
-        return newClusterId;
-    }
-
-    async splitCluster(type: MemoryType, clusterId: number): Promise<[number, number]> {
-        const clusterMap = this.clusters.get(type);
-        if (!clusterMap) throw new Error('No clusters found for type: ' + type);
-
-        const memories = await this.getClusterMemories(type, clusterId);
-        if (memories.length < 2) throw new Error('Cluster too small to split');
-
-        // Get vectors for the memories
-        const store = this.stores.get(type);
-        if (!store) throw new Error('No store found for type: ' + type);
-
-        const vectors = memories.map(memId => store.getPoint(memId));
-        
-        // Perform k-means with k=2 on the cluster's memories
-        const { centroids, assignments } = await this.kMeansClustering(vectors, 2);
-
-        // Create two new clusters
-        const newClusterId1 = Math.max(...clusterMap.keys()) + 1;
-        const newClusterId2 = newClusterId1 + 1;
-
-        // Assign memories to new clusters
-        assignments.forEach((assignment, index) => {
-            const memId = memories[index];
-            this.clusterAssignments.set(memId, assignment === 0 ? newClusterId1 : newClusterId2);
-        });
-
-        // Calculate and store new cluster metadata
-        const cluster1Memories = memories.filter((_, i) => assignments[i] === 0);
-        const cluster2Memories = memories.filter((_, i) => assignments[i] === 1);
-
-        const metadata1 = await this.calculateClusterMetadata(type, cluster1Memories, centroids[0]);
-        const metadata2 = await this.calculateClusterMetadata(type, cluster2Memories, centroids[1]);
-
-        // Update cluster map
-        clusterMap.delete(clusterId);
-        clusterMap.set(newClusterId1, metadata1);
-        clusterMap.set(newClusterId2, metadata2);
-
-        return [newClusterId1, newClusterId2];
-    }
-
-    async getAllClusters(type: MemoryType): Promise<Array<{ id: number; metadata: ClusterMetadata }>> {
-        const clusterMap = this.clusters.get(type);
-        if (!clusterMap) {
-            return [];
-        }
-
-        return Array.from(clusterMap.entries()).map(([id, metadata]) => ({
-            id,
-            metadata
-        }));
-    }
-
-    async getClusterMemories(type: MemoryType, clusterId: number): Promise<number[]> {
-        return Array.from(this.clusterAssignments.entries())
-            .filter(([_, cid]) => cid === clusterId)
-            .map(([vid, _]) => vid);
-    }
-
-    async getClusterMetadata(type: MemoryType, clusterId: number): Promise<ClusterMetadata | undefined> {
-        const clusterMap = this.clusters.get(type);
-        return clusterMap?.get(clusterId);
-    }
-
-    async getClusterHistory(clusterId: number): Promise<Array<{
-        timestamp: number;
-        stability: number;
-        size: number;
-        growthRate: number;
-        averageStrength: number;
-    }>> {
-        // This would typically be implemented with a time-series database
-        // For now, we'll return a simulated history
-        const now = Date.now();
-        const history = [];
-        for (let i = 0; i < 30; i++) {
-            history.push({
-                timestamp: now - i * 24 * 60 * 60 * 1000,
-                stability: Math.random() * 0.5 + 0.5,
-                size: Math.floor(Math.random() * 50) + 10,
-                growthRate: Math.random() * 0.3,
-                averageStrength: Math.random() * 0.4 + 0.6
-            });
-        }
-        return history.reverse();
-    }
-
-    async getClusterDynamics(type: MemoryType): Promise<{
-        growth: Array<{ clusterId: number; rate: number }>;
-        stability: Array<{ clusterId: number; score: number }>;
-        mergeRecommendations: Array<{ cluster1: number; cluster2: number; similarity: number }>;
-    }> {
-        const clusterMap = this.clusters.get(type);
-        if (!clusterMap) {
-            return { growth: [], stability: [], mergeRecommendations: [] };
-        }
-
-        const growth = await this.calculateClusterGrowth(type);
-        const stability = await this.calculateClusterStability(type);
-        const mergeRecommendations = await this.findMergeCandidates(type);
-
-        return {
-            growth,
-            stability,
-            mergeRecommendations
-        };
-    }
-
-    private async getMemory(vectorId: number): Promise<Memory> {
-        // This would typically fetch from your memory storage system
-        // For now, return a mock memory
-        return {
-            id: vectorId,
-            type: 'episodic',
-            timestamp: Date.now(),
-            strength: Math.random(),
-            content: "Memory content",
-            emotions: ["joy", "interest"],
-            vector: new Float32Array(this.dimension)
-        };
+    private async moveToArchive(memory: EnhancedMemory): Promise<void> {
+        // Implementation for moving memory to archive storage
+        // This would typically involve:
+        // 1. Storing in a separate archive storage
+        // 2. Removing from active index
+        // 3. Updating related memories
+        // 4. Maintaining archive metadata
     }
 
     async save(filepath: string): Promise<void> {
-        try {
-            for (const [type, store] of this.stores) {
-                await store.writeIndex(`${filepath}_${type}.hnsw`);
-            }
-
-            const metadataContent = JSON.stringify({
-                metadata: Array.from(this.metadata.entries()),
-                clusters: Array.from(this.clusters.entries()),
-                assignments: Array.from(this.clusterAssignments.entries())
-            });
-
-            await fs.promises.writeFile(`${filepath}_metadata.json`, metadataContent);
-        } catch (error) {
-            console.error('Error saving vector store:', error);
-            throw error;
-        }
+        await super.save(filepath);
+        await this.cache.save(`${filepath}_cache`);
+        await this.partitioner.save(`${filepath}_partitions`);
     }
 
     async load(filepath: string): Promise<void> {
-        try {
-            // Load vector stores
-            for (const type of ['episodic', 'semantic', 'procedural'] as MemoryType[]) {
-                const store = new HierarchicalNSW('cosine', this.dimension);
-                await store.readIndex(`${filepath}_${type}.hnsw`, this.maxElements);
-                this.stores.set(type, store);
-            }
-            
-            // Load metadata
-            const metadataContent = await fs.promises.readFile(`${filepath}_metadata.json`, 'utf-8');
-            const metadata = JSON.parse(metadataContent);
-            
-            this.metadata = new Map(metadata.metadata);
-            this.clusters = new Map(metadata.clusters);
-            this.clusterAssignments = new Map(metadata.assignments);
-        } catch (error) {
-            console.error('Error loading vector store:', error);
-            throw error;
-        }
+        await super.load(filepath);
+        await this.cache.load(`${filepath}_cache`);
+        await this.partitioner.load(`${filepath}_partitions`);
     }
 }
 
-export default VectorStore;
+export default EnhancedVectorStore;
