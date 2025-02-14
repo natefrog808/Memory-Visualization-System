@@ -240,4 +240,76 @@ export class WorkerPool {
         for (const timeout of this.taskTimeouts.values()) {
             clearTimeout(timeout);
         }
-        this.taskTimeouts
+        this.taskTimeouts.clear();
+
+        // Reject all queued tasks
+        for (const task of this.taskQueue) {
+            task.reject(new Error('Worker pool terminated'));
+        }
+        this.taskQueue = [];
+
+        // Terminate all workers
+        for (const [workerId, worker] of this.workers.entries()) {
+            this.terminateWorker(workerId);
+        }
+    }
+
+    async resizePool(minWorkers: number, maxWorkers: number): Promise<void> {
+        this.config.minWorkers = minWorkers;
+        this.config.maxWorkers = maxWorkers;
+
+        // Adjust pool size
+        if (this.workers.size < minWorkers) {
+            // Add workers
+            while (this.workers.size < minWorkers) {
+                await this.createWorker();
+            }
+        } else if (this.workers.size > maxWorkers) {
+            // Remove excess workers
+            const workersToRemove = Array.from(this.workers.entries())
+                .filter(([_, worker]) => !worker.busy)
+                .slice(0, this.workers.size - maxWorkers);
+
+            for (const [workerId] of workersToRemove) {
+                this.terminateWorker(workerId);
+            }
+        }
+    }
+
+    getQueueLength(): number {
+        return this.taskQueue.length;
+    }
+
+    isIdle(): boolean {
+        return this.taskQueue.length === 0 && 
+               Array.from(this.workers.values()).every(w => !w.busy);
+    }
+
+    private createWorkerErrorHandler(workerId: string) {
+        return (error: ErrorEvent) => {
+            console.error(`Worker ${workerId} error:`, error);
+            this.handleWorkerError(workerId, error);
+        };
+    }
+
+    private createWorkerMessageHandler(workerId: string) {
+        return (event: MessageEvent) => {
+            this.handleWorkerMessage(workerId, event);
+        };
+    }
+}
+
+// Example worker message types
+export interface WorkerMessage {
+    taskId: string;
+    type: string;
+    data: any;
+}
+
+export interface WorkerResponse {
+    taskId: string;
+    result?: any;
+    error?: Error;
+}
+
+export default WorkerPool;
