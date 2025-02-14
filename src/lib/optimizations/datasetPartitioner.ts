@@ -274,3 +274,34 @@ export class DatasetPartitioner {
         };
         await fs.promises.writeFile(filepath, JSON.stringify(data));
     }
+
+    async load(filepath: string): Promise<void> {
+        try {
+            const data = JSON.parse(await fs.promises.readFile(filepath, 'utf-8'));
+            this.partitions = new Map(data.partitions);
+            this.config = data.config;
+            this.dimensionality = data.dimensionality;
+        } catch (error) {
+            console.error('Error loading partitioner state:', error);
+            throw error;
+        }
+    }
+
+    private async createNewPartitionFromMembers(members: number[], store: any): Promise<void> {
+        const vectors = members.map(id => store.getVector(id));
+        const centroid = this.calculateCentroid(vectors);
+        
+        const newPartition: Partition = {
+            id: `partition_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            centroid,
+            members: new Set(members),
+            createdAt: Date.now(),
+            lastUpdated: Date.now(),
+            memoryType: store.getMemoryType(members[0])
+        };
+
+        this.partitions.set(newPartition.id, newPartition);
+    }
+}
+
+export default DatasetPartitioner;
