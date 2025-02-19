@@ -1,5 +1,3 @@
-// src/components/MemoryVisualizer.tsx
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -7,25 +5,43 @@ import { Button } from '@/components/ui/button';
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { ZoomIn, ZoomOut, Minimize2, RotateCcw } from 'lucide-react';
 import { VectorStore, MemoryType } from '../lib/vectorStore';
+import { motion } from 'framer-motion';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
 
 interface MemoryVisualizerProps {
   vectorStore: VectorStore;
   memoryType: MemoryType;
 }
 
-const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memoryType }) => {
-  const [selectedMemory, setSelectedMemory] = useState(null);
-  const [transitioningClusters, setTransitioningClusters] = useState(new Set());
-  const [selectedClusters, setSelectedClusters] = useState(new Set());
-  const [showComparison, setShowComparison] = useState(false);
-  const [clusterData, setClusterData] = useState([]);
-  const [selectedCluster, setSelectedCluster] = useState(null);
-  const [viewMode, setViewMode] = useState('2d');
-  const [timeRange, setTimeRange] = useState('all');
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [dynamics, setDynamics] = useState(null);
+interface ClusterPoint {
+  x: number;
+  y: number;
+  size: number;
+  cluster: number;
+  strength: number;
+  stability: number;
+  growthRate: number;
+  emotions: string[];
+  timeRange: { start: number; end: number };
+  memoryCount: number;
+  content: string;
+  references: Array<{ id: number; content: string }>;
+}
 
-  const toggleClusterSelection = (clusterId) => {
+const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memoryType }) => {
+  const [selectedMemory, setSelectedMemory] = useState<ClusterPoint | null>(null);
+  const [transitioningClusters, setTransitioningClusters] = useState<Set<number>>(new Set());
+  const [selectedClusters, setSelectedClusters] = useState<Set<number>>(new Set());
+  const [showComparison, setShowComparison] = useState(false);
+  const [clusterData, setClusterData] = useState<ClusterPoint[]>([]);
+  const [selectedCluster, setSelectedCluster] = useState<any>(null);
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
+  const [timeRange, setTimeRange] = useState<string>('all');
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [dynamics, setDynamics] = useState<any>(null);
+
+  const toggleClusterSelection = (clusterId: number) => {
     const newSelection = new Set(selectedClusters);
     if (newSelection.has(clusterId)) {
       newSelection.delete(clusterId);
@@ -35,8 +51,8 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
     setSelectedClusters(newSelection);
   };
 
-  const calculateAdvancedMetrics = (clusterPoints) => {
-    const emotionCounts = {};
+  const calculateAdvancedMetrics = (clusterPoints: ClusterPoint[]) => {
+    const emotionCounts: Record<string, number> = {};
     clusterPoints.forEach(point => {
       point.emotions.forEach(emotion => {
         emotionCounts[emotion] = (emotionCounts[emotion] || 0) + 1;
@@ -61,11 +77,11 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
     };
   };
 
-  const handleMemoryClick = (memory) => {
+  const handleMemoryClick = (memory: ClusterPoint) => {
     setSelectedMemory(memory);
   };
 
-  const handleMergeCluster = async (sourceId, targetId) => {
+  const handleMergeCluster = async (sourceId: number, targetId: number) => {
     try {
       setTransitioningClusters(new Set([sourceId, targetId]));
       await vectorStore.mergeClusters(memoryType, sourceId, targetId);
@@ -79,7 +95,7 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
     }
   };
 
-  const handleSplitCluster = async (clusterId) => {
+  const handleSplitCluster = async (clusterId: number) => {
     try {
       setTransitioningClusters(new Set([clusterId]));
       await vectorStore.splitCluster(memoryType, clusterId);
@@ -93,7 +109,7 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
     }
   };
 
-  const handleDissolveCluster = async (clusterId) => {
+  const handleDissolveCluster = async (clusterId: number) => {
     try {
       setTransitioningClusters(new Set([clusterId]));
       const memories = await vectorStore.getClusterMemories(memoryType, clusterId);
@@ -116,14 +132,14 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
       const clusterDynamics = await vectorStore.getClusterDynamics(memoryType);
       setDynamics(clusterDynamics);
 
-      const points = [];
+      const points: ClusterPoint[] = [];
       for (const cluster of clusters) {
         const memories = await vectorStore.getClusterMemories(memoryType, cluster.id);
         const metadata = await vectorStore.getClusterMetadata(memoryType, cluster.id);
-        const stability = clusterDynamics.stability.find(s => s.clusterId === cluster.id)?.score || 0;
-        const growthRate = clusterDynamics.growth.find(g => g.clusterId === cluster.id)?.rate || 0;
+        const stability = clusterDynamics.stability.find((s: any) => s.clusterId === cluster.id)?.score || 0;
+        const growthRate = clusterDynamics.growth.find((g: any) => g.clusterId === cluster.id)?.rate || 0;
 
-        memories.forEach(memory => {
+        memories.forEach((memory: any) => {
           const vector = memory.vector;
           points.push({
             x: vector[0],
@@ -154,14 +170,14 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
     return () => clearInterval(interval);
   }, [fetchClusterData]);
 
-  const getClusterColor = (stability, growthRate) => {
+  const getClusterColor = (stability: number, growthRate: number) => {
     const r = Math.floor(255 * (1 - stability));
     const g = Math.floor(255 * (stability > growthRate ? stability : growthRate));
     const b = Math.floor(255 * (1 - growthRate));
     return `rgb(${r}, ${g}, ${b})`;
   };
 
-  const formatDate = (timestamp) => {
+  const formatDate = (timestamp: number) => {
     const date = new Date(timestamp);
     return `${date.getMonth() + 1}/${date.getDate()}`;
   };
@@ -172,6 +188,26 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
     const age = now - point.timeRange.start;
     return timeRange === 'recent' ? age < 7 * 24 * 60 * 60 * 1000 : age >= 7 * 24 * 60 * 60 * 1000;
   });
+
+  const render3DVisualization = (data: ClusterPoint[]) => (
+    <Canvas style={{ height: '100%' }}>
+      <ambientLight intensity={0.5} />
+      <pointLight position={[10, 10, 10]} />
+      {data.map((point) => (
+        <motion.mesh
+          key={point.cluster}
+          position={[point.x, point.y, point.strength * 10]}
+          initial={{ scale: 0 }}
+          animate={{ scale: transitioningClusters.has(point.cluster) ? 0 : 1 }}
+          transition={{ type: 'spring', stiffness: 100, damping: 10 }}
+        >
+          <sphereGeometry args={[point.size / 10, 32, 32]} />
+          <meshStandardMaterial color={getClusterColor(point.stability, point.growthRate)} />
+        </motion.mesh>
+      ))}
+      <OrbitControls />
+    </Canvas>
+  );
 
   return (
     <Card className="w-full max-w-6xl">
@@ -234,75 +270,79 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
       <CardContent>
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2 h-96">
-            <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                <XAxis 
-                  type="number" 
-                  dataKey="x" 
-                  name="X" 
-                  domain={['auto', 'auto']}
-                />
-                <YAxis 
-                  type="number" 
-                  dataKey="y" 
-                  name="Y"
-                  domain={['auto', 'auto']}
-                />
-                {viewMode === '3d' && (
-                  <ZAxis 
+            {viewMode === '3d' ? (
+              render3DVisualization(filteredData)
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                  <XAxis 
                     type="number" 
-                    dataKey="strength" 
-                    range={[50, 400]} 
-                    name="Strength" 
+                    dataKey="x" 
+                    name="X" 
+                    domain={['auto', 'auto']}
                   />
-                )}
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (active && payload && payload.length) {
-                      const data = payload[0].payload;
-                      return (
-                        <div className="bg-white p-4 rounded shadow-lg border">
-                          <p className="font-medium">Cluster {data.cluster}</p>
-                          <p>Memories: {data.memoryCount}</p>
-                          <p>Stability: {(data.stability * 100).toFixed(1)}%</p>
-                          <p>Growth: {(data.growthRate * 100).toFixed(1)}%</p>
-                          <p>Strength: {(data.strength * 100).toFixed(1)}%</p>
-                          <p>Emotions: {data.emotions.join(', ')}</p>
-                          <button 
-                            className="mt-2 text-blue-600 hover:text-blue-800"
-                            onClick={() => handleMemoryClick(data)}
-                          >
-                            View Details
-                          </button>
-                        </div>
-                      );
-                    }
-                    return null;
-                  }}
-                />
-                <Legend />
-                {Array.from(new Set(filteredData.map(d => d.cluster))).map(clusterId => {
-                  const clusterPoints = filteredData.filter(d => d.cluster === clusterId);
-                  const stability = clusterPoints[0]?.stability || 0;
-                  const growthRate = clusterPoints[0]?.growthRate || 0;
-                  return (
-                    <Scatter
-                      key={clusterId}
-                      name={`Cluster ${clusterId}`}
-                      data={clusterPoints}
-                      fill={getClusterColor(stability, growthRate)}
-                      onClick={() => {
-                        toggleClusterSelection(clusterId);
-                        handleMemoryClick(clusterPoints[0]);
-                      }}
-                      className={`transition-opacity duration-500 ${
-                        transitioningClusters.has(clusterId) ? 'opacity-0' : 'opacity-100'
-                      } ${selectedClusters.has(clusterId) ? "stroke-2 stroke-white" : ""}`}
-                    />
-                  );
-                })}
-              </ScatterChart>
-            </ResponsiveContainer>
+                  <YAxis 
+                    type="number" 
+                    dataKey="y" 
+                    name="Y"
+                    domain={['auto', 'auto']}
+                  />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const data = payload[0].payload;
+                        return (
+                          <div className="bg-white p-4 rounded shadow-lg border">
+                            <p className="font-medium">Cluster {data.cluster}</p>
+                            <p>Memories: {data.memoryCount}</p>
+                            <p>Stability: {(data.stability * 100).toFixed(1)}%</p>
+                            <p>Growth: {(data.growthRate * 100).toFixed(1)}%</p>
+                            <p>Strength: {(data.strength * 100).toFixed(1)}%</p>
+                            <p>Emotions: {data.emotions.join(', ')}</p>
+                            <button 
+                              className="mt-2 text-blue-600 hover:text-blue-800"
+                              onClick={() => handleMemoryClick(data)}
+                            >
+                              View Details
+                            </button>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Legend />
+                  {Array.from(new Set(filteredData.map(d => d.cluster))).map(clusterId => {
+                    const clusterPoints = filteredData.filter(d => d.cluster === clusterId);
+                    const stability = clusterPoints[0]?.stability || 0;
+                    const growthRate = clusterPoints[0]?.growthRate || 0;
+                    return (
+                      <motion.g
+                        key={clusterId}
+                        initial={{ opacity: 0, scale: 0 }}
+                        animate={{
+                          opacity: transitioningClusters.has(clusterId) ? 0 : 1,
+                          scale: transitioningClusters.has(clusterId) ? 0.5 : 1,
+                        }}
+                        transition={{ type: 'spring', stiffness: 100, damping: 10 }}
+                      >
+                        <Scatter
+                          name={`Cluster ${clusterId}`}
+                          data={clusterPoints}
+                          fill={getClusterColor(stability, growthRate)}
+                          onClick={() => {
+                            toggleClusterSelection(clusterId);
+                            handleMemoryClick(clusterPoints[0]);
+                            setSelectedCluster(clusterPoints[0]); // Update selected cluster
+                          }}
+                          className={selectedClusters.has(clusterId) ? 'stroke-2 stroke-white' : ''}
+                        />
+                      </motion.g>
+                    );
+                  })}
+                </ScatterChart>
+              </ResponsiveContainer>
+            )}
           </div>
 
           <div className="space-y-4">
@@ -340,7 +380,7 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
                                 />
                               );
                             })}
-                            <XAxis dataKey="timestamp" tickFormatter={formatDate} />
+                            <XAxis dataKey="timeRange.start" tickFormatter={formatDate} />
                             <YAxis domain={[0, 1]} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
                             <Tooltip />
                             <Legend />
@@ -384,7 +424,7 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
             {selectedCluster && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Cluster {selectedCluster.id} Analysis</CardTitle>
+                  <CardTitle>Cluster {selectedCluster.cluster} Analysis</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <div className="grid grid-cols-2 gap-2 text-sm">
@@ -401,19 +441,15 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
                       <p>{selectedCluster.memoryCount}</p>
                     </div>
                     <div>
-                      <p className="font-medium">Recent Memories</p>
-                      <p>{selectedCluster.recentMemories}</p>
-                    </div>
-                    <div>
                       <p className="font-medium">Average Strength</p>
-                      <p>{(selectedCluster.averageStrength * 100).toFixed(1)}%</p>
+                      <p>{(selectedCluster.strength * 100).toFixed(1)}%</p>
                     </div>
                   </div>
 
                   <div>
                     <p className="font-medium">Dominant Emotions</p>
                     <div className="flex flex-wrap gap-1 mt-1">
-                      {selectedCluster.dominantEmotions.map(emotion => (
+                      {selectedCluster.emotions.map((emotion: string) => (
                         <span 
                           key={emotion}
                           className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs"
@@ -427,21 +463,18 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
                   <div className="mt-4 space-y-2">
                     <p className="font-medium">Cluster Management</p>
                     <div className="flex space-x-2">
-                      {selectedCluster.mergeRecommendations?.[0] && (
+                      {selectedCluster.memoryCount > 1 && (
                         <Button
                           size="sm"
-                          onClick={() => handleMergeCluster(
-                            selectedCluster.id,
-                            selectedCluster.mergeRecommendations[0].clusterId
-                          )}
+                          onClick={() => handleMergeCluster(selectedCluster.cluster, selectedCluster.cluster + 1)}
                         >
-                          Merge with Cluster {selectedCluster.mergeRecommendations[0].clusterId}
+                          Merge with Next
                         </Button>
                       )}
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => handleSplitCluster(selectedCluster.id)}
+                        onClick={() => handleSplitCluster(selectedCluster.cluster)}
                         disabled={selectedCluster.memoryCount < 10}
                       >
                         Split
@@ -449,7 +482,7 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
                       <Button
                         size="sm"
                         variant="destructive"
-                        onClick={() => handleDissolveCluster(selectedCluster.id)}
+                        onClick={() => handleDissolveCluster(selectedCluster.cluster)}
                       >
                         Dissolve
                       </Button>
@@ -459,7 +492,6 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
               </Card>
             )}
 
-            {/* Global Statistics */}
             {dynamics && (
               <Card>
                 <CardHeader>
@@ -481,7 +513,6 @@ const MemoryVisualizer: React.FC<MemoryVisualizerProps> = ({ vectorStore, memory
         </div>
       </CardContent>
 
-      {/* Memory Preview Modal */}
       {selectedMemory && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
