@@ -1,3 +1,51 @@
+# .gitignore
+# Environment variables and secrets
 .env
-dist/
+*.env.local
+*.env.development
+*.env.test
+*.env.production
+
+# Node.js and dependencies
 node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json  # Optional: if you use yarn exclusively
+
+# Build outputs
+dist/
+build/
+*.js.map
+*.tsbuildinfo
+
+# Temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store  # macOS-specific
+
+# Test artifacts
+coverage/
+test-results/
+*.test.log
+
+# Data and persistence (from SAVE_DIR in .env.example)
+data/
+*.dat
+*.jsonl
+
+# Worker scripts and generated files
+worker-*.js
+*.worker.js
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Miscellaneous
+*.pid
+*.seed
+*.pid.lock
